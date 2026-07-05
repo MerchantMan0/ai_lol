@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
-"""Zero-shot LoL match outcome classification with TabFM (PyTorch).
+"""Zero-shot LoL draft winner prediction with TabFM (PyTorch).
 
-Each row is one hero in one ranked match. Features (24 numeric columns):
-  1     overall win rate
-  2–15  win rate by game-duration bucket (14 intervals)
-  16–20 relative advantage vs each of the 5 enemy champions
-  21–24 relative synergy with each of the 4 allied champions
+One row per complete 5v5 draft. Given both teams' champion picks, predict
+which team won (TEAM_100 or TEAM_200).
 
-Target: WIN or LOSS for that participant.
+Features (24 numeric columns, team 100 minus team 200):
+  1     mean overall win rate across the 5 picks
+  2–15  mean win rate in each game-duration bucket
+  16–20 mean counter edge vs each of the 5 enemy champions
+  21–24 mean synergy with each of the 4 ally slots
 
 Model: https://huggingface.co/google/tabfm-1.0.0-pytorch
 """
@@ -26,7 +27,8 @@ from extract_lol_features import DEFAULT_OUTPUT, fetch_participants
 from lol_features import (
     FEATURE_NAMES,
     build_champion_stats,
-    participants_to_feature_frame,
+    drafts_to_feature_frame,
+    participants_to_drafts,
     train_test_split_by_match,
 )
 from tabfm import TabFMClassifier
@@ -75,37 +77,20 @@ def load_participants() -> pd.DataFrame:
     )
 
 
-def cap_training_rows(
-    X_train: pd.DataFrame,
-    y_train: np.ndarray,
+def cap_rows(
+    X: pd.DataFrame,
+    y: np.ndarray,
+    meta: pd.DataFrame,
     max_rows: int,
-    random_state: int = 42,
-) -> tuple[pd.DataFrame, np.ndarray]:
-    if len(X_train) <= max_rows:
-        return X_train, y_train
-    rng = np.random.default_rng(random_state)
-    idx = rng.choice(len(X_train), size=max_rows, replace=False)
-    log(f"Capping training context from {len(X_train)} to {max_rows} rows (TabFM memory limit)")
-    return X_train.iloc[idx].reset_index(drop=True), y_train[idx]
-
-
-def cap_test_rows(
-    X_test: pd.DataFrame,
-    y_test: np.ndarray,
-    test_participants: pd.DataFrame,
-    max_rows: int,
+    label: str,
     random_state: int = 42,
 ) -> tuple[pd.DataFrame, np.ndarray, pd.DataFrame]:
-    if len(X_test) <= max_rows:
-        return X_test, y_test, test_participants
+    if len(X) <= max_rows:
+        return X, y, meta
     rng = np.random.default_rng(random_state)
-    idx = rng.choice(len(X_test), size=max_rows, replace=False)
-    log(f"Capping test evaluation from {len(X_test)} to {max_rows} rows")
-    return (
-        X_test.iloc[idx].reset_index(drop=True),
-        y_test[idx],
-        test_participants.iloc[idx].reset_index(drop=True),
-    )
+    idx = rng.choice(len(X), size=max_rows, replace=False)
+    log(f"Capping {label} from {len(X)} to {max_rows} rows")
+    return X.iloc[idx].reset_index(drop=True), y[idx], meta.iloc[idx].reset_index(drop=True)
 
 
 def predict_batched(
@@ -142,7 +127,8 @@ def load_env() -> None:
 def main() -> int:
     load_env()
     configure_logging()
-    log("=== TabFM LoL classification demo ===")
+    log("=== TabFM LoL draft winner demo ===")
+    log("Task: given full 5v5 draft → predict TEAM_100 or TEAM_200 won")
     log_torch_device()
     device = resolve_device()
     log(f"Target device for inference: {device}")
@@ -152,7 +138,12 @@ def main() -> int:
     log("")
 
     participants = load_participants()
-    train_participants, test_participants = train_test_split_by_match(participants)
+    all_drafts = participants_to_drafts(participants)
+    log(f"Complete 5v5 drafts: {len(all_drafts)} matches")
+
+    train_drafts, test_drafts = train_test_split_by_match(participants)
+    train_match_ids = set(train_drafts["match_id"])
+    train_participants = participants[participants["match_id"].isin(train_match_ids)]
     stats = build_champion_stats(train_participants)
 
     max_train = env_int("MAX_TRAIN_ROWS", MAX_TRAIN_ROWS)
@@ -160,17 +151,13 @@ def main() -> int:
     batch_size = env_int("PREDICT_BATCH_SIZE", PREDICT_BATCH_SIZE)
     n_estimators = env_int("TABFM_N_ESTIMATORS", TABFM_N_ESTIMATORS)
 
-    X_train, y_train = participants_to_feature_frame(train_participants, stats)
-    X_test, y_test = participants_to_feature_frame(test_participants, stats)
-    X_train, y_train = cap_training_rows(X_train, y_train, max_train)
-    X_test, y_test, test_participants = cap_test_rows(
-        X_test, y_test, test_participants, max_test
-    )
+    X_train, y_train = drafts_to_feature_frame(train_drafts, stats)
+    X_test, y_test = drafts_to_feature_frame(test_drafts, stats)
+    X_train, y_train, train_drafts = cap_rows(X_train, y_train, train_drafts, max_train, "training context")
+    X_test, y_test, test_drafts = cap_rows(X_test, y_test, test_drafts, max_test, "test set")
 
-    log(f"Training context: {len(X_train)} rows, {len(FEATURE_NAMES)} features")
-    log(f"Test rows: {len(X_test)}")
-    log(f"Train matches: {train_participants['match_id'].nunique()}")
-    log(f"Test matches: {test_participants['match_id'].nunique()}")
+    log(f"Training context: {len(X_train)} drafts, {len(FEATURE_NAMES)} features")
+    log(f"Test drafts: {len(X_test)}")
     log_class_counts("Train", y_train)
     log_class_counts("Test", y_test)
     log("")
@@ -184,13 +171,12 @@ def main() -> int:
     log("")
 
     log("Fitting (preprocessing only — foundation weights are NOT fine-tuned)...")
-    log("  stats computed from training matches; no weight updates")
     t0 = time.time()
     clf.fit(X_train, y_train)
     log(f"  fit complete in {time.time() - t0:.1f}s")
     log("")
 
-    log(f"Predicting on {len(X_test)} held-out rows (batch size {batch_size})...")
+    log(f"Predicting winners for {len(X_test)} held-out drafts (batch size {batch_size})...")
     t0 = time.time()
     preds, probs = predict_batched(clf, X_test, batch_size)
     log(f"  predict complete in {time.time() - t0:.1f}s")
@@ -198,20 +184,23 @@ def main() -> int:
     log("")
 
     accuracy = (preds == y_test).mean()
-    log(f"Accuracy on held-out test set: {accuracy:.1%}")
+    log(f"Draft winner accuracy: {accuracy:.1%}")
     log(f"Correct: {(preds == y_test).sum()} / {len(y_test)}")
     log("")
 
     log("Sample predictions:")
     for i in range(min(5, len(X_test))):
-        champ = test_participants.iloc[i]["champion_name"]
+        row = test_drafts.iloc[i]
         log(
-            f"  [{i}] {champ} overall_wr={X_test.iloc[i]['overall_win_rate']:.3f} "
+            f"  [{i}] {row['match_id']}\n"
+            f"      team100: {row['team100_champion_names']}\n"
+            f"      team200: {row['team200_champion_names']}\n"
+            f"      overall_wr_diff={X_test.iloc[i]['overall_win_rate_diff']:.3f} "
             f"→ pred={preds[i]!r} (true={y_test[i]!r})"
         )
 
     log("")
-    log("Class probabilities (first 3 test rows):")
+    log("Class probabilities (first 3 test drafts):")
     for i in range(min(3, len(probs))):
         log(f"  row {i}: {probs[i]}")
     log("")
