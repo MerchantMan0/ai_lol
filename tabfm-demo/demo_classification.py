@@ -9,8 +9,6 @@ Model: https://huggingface.co/google/tabfm-1.0.0-pytorch
 
 from __future__ import annotations
 
-import logging
-import sys
 import time
 
 import numpy as np
@@ -18,39 +16,20 @@ import pandas as pd
 from sklearn.datasets import load_wine
 from sklearn.model_selection import train_test_split
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s %(levelname)s %(message)s",
-    stream=sys.stdout,
-    force=True,
+from tabfm import TabFMClassifier, tabfm_v1_0_0_pytorch as tabfm_v1_0_0
+from tabfm_demo_common import (
+    configure_logging,
+    log,
+    log_torch_device,
+    predownload_checkpoint,
+    resolve_device,
+    setup_hf_download,
 )
-
-
-def log(msg: str) -> None:
-    print(msg, flush=True)
-
-
-def log_torch_device() -> None:
-    try:
-        import torch
-    except ImportError:
-        log("PyTorch: not installed yet")
-        return
-
-    log(f"PyTorch {torch.__version__}")
-    if torch.cuda.is_available():
-        log(f"CUDA device: {torch.cuda.get_device_name(0)}")
-        log(f"CUDA memory allocated: {torch.cuda.memory_allocated() / 1e6:.1f} MB")
-    else:
-        log("CUDA: not available (model will run on CPU — slower)")
 
 
 def log_class_counts(name: str, labels: np.ndarray) -> None:
     classes, counts = np.unique(labels, return_counts=True)
-    log(f"{name} class counts: {dict(zip(classes, counts))}")
-
-
-from tabfm import TabFMClassifier, tabfm_v1_0_0_pytorch as tabfm_v1_0_0
+    log(f"{name} class counts: {dict(zip(classes, counts.astype(int)))}")
 
 
 FEATURE_NAMES = [
@@ -84,8 +63,14 @@ def load_wine_table() -> tuple[pd.DataFrame, np.ndarray]:
 
 
 def main() -> None:
+    configure_logging()
     log("=== TabFM classification demo (wine cultivars) ===")
     log_torch_device()
+    device = resolve_device()
+    log(f"Target device for inference: {device}")
+    log("")
+
+    token = setup_hf_download()
     log("")
 
     log("Loading dataset...")
@@ -101,12 +86,16 @@ def main() -> None:
     log_class_counts("Test", y_test)
     log("")
 
-    log("Downloading/loading TabFM classification weights from Hugging Face...")
-    log("  repo: google/tabfm-1.0.0-pytorch (subfolder: classification)")
-    log("  first run can take several minutes — download + weight load")
+    checkpoint_dir = predownload_checkpoint("classification", token)
+
+    log("Loading weights into memory (another few minutes on first run)...")
     t0 = time.time()
-    model = tabfm_v1_0_0.load(model_type="classification")
-    log(f"  weights loaded in {time.time() - t0:.1f}s")
+    model = tabfm_v1_0_0.load(
+        model_type="classification",
+        checkpoint_path=str(checkpoint_dir.parent),
+        device=device,
+    )
+    log(f"  model ready in {time.time() - t0:.1f}s")
     log_torch_device()
 
     log("Wrapping model in TabFMClassifier...")
