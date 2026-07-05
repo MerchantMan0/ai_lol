@@ -30,7 +30,7 @@ from tabfm_demo_common import (
 
 def log_class_counts(name: str, labels: np.ndarray) -> None:
     classes, counts = np.unique(labels, return_counts=True)
-    log(f"{name} class counts: {dict(zip(classes, counts.astype(int)))}")
+    log(f"{name} class counts: {dict(zip(classes, [int(c) for c in counts]))}")
 
 
 FEATURE_NAMES = [
@@ -87,8 +87,8 @@ def main() -> None:
     log_class_counts("Test", y_test)
     log("")
 
-    predownload_checkpoint("classification", token)
-    model = load_tabfm_model("classification", device)
+    checkpoint_dir = predownload_checkpoint("classification", token)
+    model = load_tabfm_model("classification", device, checkpoint_dir)
 
     log("Wrapping model in TabFMClassifier...")
     clf = TabFMClassifier(model=model)

@@ -64,8 +64,8 @@ def main() -> None:
     log(f"Target range: ${y.min():.0f}k – ${y.max():.0f}k (×100k)")
     log("")
 
-    predownload_checkpoint("regression", token)
-    model = load_tabfm_model("regression", device)
+    checkpoint_dir = predownload_checkpoint("regression", token)
+    model = load_tabfm_model("regression", device, checkpoint_dir)
 
     log("Wrapping model in TabFMRegressor...")
     reg = TabFMRegressor(model=model)

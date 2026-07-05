@@ -80,26 +80,36 @@ def predownload_checkpoint(model_type: str, token: str | None) -> Path:
     return checkpoint_dir
 
 
-def load_tabfm_model(model_type: str, device: str):
-    """Load TabFM from the HF cache (call predownload_checkpoint first)."""
+def load_tabfm_model(model_type: str, device: str, checkpoint_dir: Path):
+    """Load TabFM weights from a pre-downloaded HF checkpoint directory."""
     import torch
-    from tabfm.src.pytorch.tabfm_v1_0_0 import HF_REPO_ID, TabFM_HF
+    from safetensors.torch import load_file
+    from tabfm.src.pytorch.model import TabFM
+    from tabfm.src.pytorch.tabfm_v1_0_0 import ClassificationConfig, RegressionConfig
+
+    weights_path = checkpoint_dir / "model.safetensors"
+    if not weights_path.is_file():
+        raise FileNotFoundError(
+            f"Expected safetensors weights at {weights_path}. "
+            "PyPI tabfm looks for pytorch_model.bin, but HF hosts model.safetensors."
+        )
 
     map_location = device if device == "cuda" and torch.cuda.is_available() else "cpu"
-    log(f"Loading weights onto {map_location} (bfloat16)...")
-    log("  bypassing tabfm.load() — PyPI build reads weights with map_location='cpu'")
+    config = (
+        ClassificationConfig()
+        if model_type == "classification"
+        else RegressionConfig()
+    )
+
+    log(f"Building TabFM ({model_type}) and loading {weights_path.name} onto {map_location}...")
     log_torch_device()
 
     t0 = time.time()
-    model = TabFM_HF.from_pretrained(
-        HF_REPO_ID,
-        subfolder=model_type,
-        map_location=map_location,
-    )
+    model = TabFM(**config.to_dict())
+    state_dict = load_file(str(weights_path), device=map_location)
+    model.load_state_dict(state_dict, strict=True)
     model = model.to(torch.bfloat16)
-    param_device = next(model.parameters()).device
-    if map_location != "cpu" and param_device.type != map_location:
-        log(f"  moving model from {param_device} to {map_location}")
+    if map_location != "cpu":
         model = model.to(map_location)
     model.eval()
 
