@@ -176,7 +176,7 @@ def train_test_split_by_match(
     test_size: float = 0.2,
     random_state: int = 42,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
-    match_ids = participants["match_id"].unique()
+    match_ids = np.array(participants["match_id"].unique())
     rng = np.random.default_rng(random_state)
     rng.shuffle(match_ids)
     split = int(len(match_ids) * (1 - test_size))

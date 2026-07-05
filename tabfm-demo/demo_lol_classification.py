@@ -41,6 +41,14 @@ from tabfm_demo_common import (
 )
 
 MAX_TRAIN_ROWS = 800
+MAX_TEST_ROWS = 2000
+PREDICT_BATCH_SIZE = 8
+TABFM_N_ESTIMATORS = 1
+
+
+def env_int(name: str, default: int) -> int:
+    value = os.getenv(name)
+    return int(value) if value else default
 
 
 def log_class_counts(name: str, labels: np.ndarray) -> None:
@@ -81,6 +89,43 @@ def cap_training_rows(
     return X_train.iloc[idx].reset_index(drop=True), y_train[idx]
 
 
+def cap_test_rows(
+    X_test: pd.DataFrame,
+    y_test: np.ndarray,
+    test_participants: pd.DataFrame,
+    max_rows: int,
+    random_state: int = 42,
+) -> tuple[pd.DataFrame, np.ndarray, pd.DataFrame]:
+    if len(X_test) <= max_rows:
+        return X_test, y_test, test_participants
+    rng = np.random.default_rng(random_state)
+    idx = rng.choice(len(X_test), size=max_rows, replace=False)
+    log(f"Capping test evaluation from {len(X_test)} to {max_rows} rows")
+    return (
+        X_test.iloc[idx].reset_index(drop=True),
+        y_test[idx],
+        test_participants.iloc[idx].reset_index(drop=True),
+    )
+
+
+def predict_batched(
+    clf: TabFMClassifier,
+    X_test: pd.DataFrame,
+    batch_size: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    prob_chunks: list[np.ndarray] = []
+    n = len(X_test)
+    for start in range(0, n, batch_size):
+        end = min(start + batch_size, n)
+        chunk = X_test.iloc[start:end]
+        prob_chunks.append(clf.predict_proba(chunk))
+        log(f"  batch {start // batch_size + 1}/{(n + batch_size - 1) // batch_size}: rows {start}-{end - 1}")
+    probs = np.vstack(prob_chunks)
+    class_idx = np.argmax(probs[:, : clf.n_classes_], axis=1)
+    preds = clf.y_encoder_.inverse_transform(class_idx.reshape(-1, 1)).flatten()
+    return preds.astype(clf.classes_.dtype), probs
+
+
 def load_env() -> None:
     repo_root = Path(__file__).resolve().parents[1]
     for path in (
@@ -110,9 +155,17 @@ def main() -> int:
     train_participants, test_participants = train_test_split_by_match(participants)
     stats = build_champion_stats(train_participants)
 
+    max_train = env_int("MAX_TRAIN_ROWS", MAX_TRAIN_ROWS)
+    max_test = env_int("MAX_TEST_ROWS", MAX_TEST_ROWS)
+    batch_size = env_int("PREDICT_BATCH_SIZE", PREDICT_BATCH_SIZE)
+    n_estimators = env_int("TABFM_N_ESTIMATORS", TABFM_N_ESTIMATORS)
+
     X_train, y_train = participants_to_feature_frame(train_participants, stats)
     X_test, y_test = participants_to_feature_frame(test_participants, stats)
-    X_train, y_train = cap_training_rows(X_train, y_train, MAX_TRAIN_ROWS)
+    X_train, y_train = cap_training_rows(X_train, y_train, max_train)
+    X_test, y_test, test_participants = cap_test_rows(
+        X_test, y_test, test_participants, max_test
+    )
 
     log(f"Training context: {len(X_train)} rows, {len(FEATURE_NAMES)} features")
     log(f"Test rows: {len(X_test)}")
@@ -126,7 +179,8 @@ def main() -> int:
     model = load_tabfm_model("classification", device, checkpoint_dir)
 
     log("Wrapping model in TabFMClassifier...")
-    clf = TabFMClassifier(model=model)
+    clf = TabFMClassifier(model=model, n_estimators=n_estimators, batch_size=1)
+    log(f"  n_estimators={n_estimators}, predict_batch_size={batch_size}")
     log("")
 
     log("Fitting (preprocessing only — foundation weights are NOT fine-tuned)...")
@@ -136,14 +190,10 @@ def main() -> int:
     log(f"  fit complete in {time.time() - t0:.1f}s")
     log("")
 
-    log(f"Predicting on {len(X_test)} held-out participant rows...")
+    log(f"Predicting on {len(X_test)} held-out rows (batch size {batch_size})...")
     t0 = time.time()
-    preds = clf.predict(X_test)
+    preds, probs = predict_batched(clf, X_test, batch_size)
     log(f"  predict complete in {time.time() - t0:.1f}s")
-
-    t0 = time.time()
-    probs = clf.predict_proba(X_test)
-    log(f"  predict_proba complete in {time.time() - t0:.1f}s")
     log_torch_device(model)
     log("")
 
