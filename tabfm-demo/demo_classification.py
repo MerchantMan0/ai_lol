@@ -16,9 +16,10 @@ import pandas as pd
 from sklearn.datasets import load_wine
 from sklearn.model_selection import train_test_split
 
-from tabfm import TabFMClassifier, tabfm_v1_0_0_pytorch as tabfm_v1_0_0
+from tabfm import TabFMClassifier
 from tabfm_demo_common import (
     configure_logging,
+    load_tabfm_model,
     log,
     log_torch_device,
     predownload_checkpoint,
@@ -86,16 +87,8 @@ def main() -> None:
     log_class_counts("Test", y_test)
     log("")
 
-    checkpoint_dir = predownload_checkpoint("classification", token)
-
-    log("Loading weights into memory (another few minutes on first run)...")
-    t0 = time.time()
-    model = tabfm_v1_0_0.load(
-        model_type="classification",
-        checkpoint_path=str(checkpoint_dir.parent),
-        device=device,
-    )
-    log(f"  model ready in {time.time() - t0:.1f}s")
+    predownload_checkpoint("classification", token)
+    model = load_tabfm_model("classification", device)
     log_torch_device()
 
     log("Wrapping model in TabFMClassifier...")

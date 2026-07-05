@@ -17,9 +17,10 @@ from sklearn.datasets import fetch_california_housing
 from sklearn.metrics import mean_absolute_error, r2_score
 from sklearn.model_selection import train_test_split
 
-from tabfm import TabFMRegressor, tabfm_v1_0_0_pytorch as tabfm_v1_0_0
+from tabfm import TabFMRegressor
 from tabfm_demo_common import (
     configure_logging,
+    load_tabfm_model,
     log,
     log_torch_device,
     predownload_checkpoint,
@@ -63,16 +64,8 @@ def main() -> None:
     log(f"Target range: ${y.min():.0f}k – ${y.max():.0f}k (×100k)")
     log("")
 
-    checkpoint_dir = predownload_checkpoint("regression", token)
-
-    log("Loading weights into memory (another few minutes on first run)...")
-    t0 = time.time()
-    model = tabfm_v1_0_0.load(
-        model_type="regression",
-        checkpoint_path=str(checkpoint_dir.parent),
-        device=device,
-    )
-    log(f"  model ready in {time.time() - t0:.1f}s")
+    predownload_checkpoint("regression", token)
+    model = load_tabfm_model("regression", device)
     log_torch_device()
 
     log("Wrapping model in TabFMRegressor...")

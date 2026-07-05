@@ -17,8 +17,6 @@ def log(msg: str) -> None:
 
 def setup_hf_download() -> str | None:
     """Enable HF progress bars and return token if set."""
-    os.environ.setdefault("HF_HUB_ENABLE_HF_TRANSFER", "1")
-
     try:
         from huggingface_hub.utils import enable_progress_bars
 
@@ -80,6 +78,19 @@ def predownload_checkpoint(model_type: str, token: str | None) -> Path:
 
     log_hf_cache_size(model_type)
     return checkpoint_dir
+
+
+def load_tabfm_model(model_type: str, device: str):
+    """Load TabFM from the HF cache (call predownload_checkpoint first)."""
+    from tabfm import tabfm_v1_0_0_pytorch as tabfm_v1_0_0
+
+    log("Loading weights into memory (another few minutes on first run)...")
+    t0 = time.time()
+    # Do not pass checkpoint_path — the PyPI loader mis-handles snapshot dirs.
+    # After predownload_checkpoint(), HF cache is warm and this resolves quickly.
+    model = tabfm_v1_0_0.load(model_type=model_type, device=device)
+    log(f"  model ready in {time.time() - t0:.1f}s")
+    return model
 
 
 def resolve_device() -> str:
