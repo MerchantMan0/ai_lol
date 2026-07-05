@@ -82,14 +82,29 @@ def predownload_checkpoint(model_type: str, token: str | None) -> Path:
 
 def load_tabfm_model(model_type: str, device: str):
     """Load TabFM from the HF cache (call predownload_checkpoint first)."""
-    from tabfm import tabfm_v1_0_0_pytorch as tabfm_v1_0_0
+    import torch
+    from tabfm.src.pytorch.tabfm_v1_0_0 import HF_REPO_ID, TabFM_HF
 
-    log("Loading weights into memory (another few minutes on first run)...")
+    map_location = device if device == "cuda" and torch.cuda.is_available() else "cpu"
+    log(f"Loading weights onto {map_location} (bfloat16)...")
+    log("  bypassing tabfm.load() — PyPI build reads weights with map_location='cpu'")
+    log_torch_device()
+
     t0 = time.time()
-    # Do not pass checkpoint_path — the PyPI loader mis-handles snapshot dirs.
-    # After predownload_checkpoint(), HF cache is warm and this resolves quickly.
-    model = tabfm_v1_0_0.load(model_type=model_type, device=device)
+    model = TabFM_HF.from_pretrained(
+        HF_REPO_ID,
+        subfolder=model_type,
+        map_location=map_location,
+    )
+    model = model.to(torch.bfloat16)
+    param_device = next(model.parameters()).device
+    if map_location != "cpu" and param_device.type != map_location:
+        log(f"  moving model from {param_device} to {map_location}")
+        model = model.to(map_location)
+    model.eval()
+
     log(f"  model ready in {time.time() - t0:.1f}s")
+    log_torch_device(model)
     return model
 
 
@@ -101,7 +116,7 @@ def resolve_device() -> str:
     return "cuda" if torch.cuda.is_available() else "cpu"
 
 
-def log_torch_device() -> None:
+def log_torch_device(model=None) -> None:
     try:
         import torch
     except ImportError:
@@ -111,9 +126,18 @@ def log_torch_device() -> None:
     log(f"PyTorch {torch.__version__}")
     if torch.cuda.is_available():
         log(f"CUDA device: {torch.cuda.get_device_name(0)}")
-        log(f"CUDA memory allocated: {torch.cuda.memory_allocated() / 1e6:.1f} MB")
+        alloc_gb = torch.cuda.memory_allocated() / 1e9
+        reserved_gb = torch.cuda.memory_reserved() / 1e9
+        log(f"GPU memory: {alloc_gb:.2f} GB allocated, {reserved_gb:.2f} GB reserved")
     else:
         log("CUDA: not available (model will run on CPU — slower)")
+
+    if model is not None:
+        try:
+            param = next(model.parameters())
+            log(f"Model weights: device={param.device}, dtype={param.dtype}")
+        except StopIteration:
+            pass
 
 
 def configure_logging() -> None:

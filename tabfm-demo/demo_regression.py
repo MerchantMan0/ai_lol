@@ -66,7 +66,6 @@ def main() -> None:
 
     predownload_checkpoint("regression", token)
     model = load_tabfm_model("regression", device)
-    log_torch_device()
 
     log("Wrapping model in TabFMRegressor...")
     reg = TabFMRegressor(model=model)
@@ -82,7 +81,7 @@ def main() -> None:
     t0 = time.time()
     preds = reg.predict(X_test)
     log(f"  predict complete in {time.time() - t0:.1f}s")
-    log_torch_device()
+    log_torch_device(model)
     log("")
 
     mae = mean_absolute_error(y_test, preds)

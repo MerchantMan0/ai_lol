@@ -89,7 +89,6 @@ def main() -> None:
 
     predownload_checkpoint("classification", token)
     model = load_tabfm_model("classification", device)
-    log_torch_device()
 
     log("Wrapping model in TabFMClassifier...")
     clf = TabFMClassifier(model=model)
@@ -111,7 +110,7 @@ def main() -> None:
     t0 = time.time()
     probs = clf.predict_proba(X_test)
     log(f"  predict_proba complete in {time.time() - t0:.1f}s")
-    log_torch_device()
+    log_torch_device(model)
     log("")
 
     accuracy = (preds == y_test).mean()
