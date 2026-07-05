@@ -1,3 +1,4 @@
 db details/
 tabfm-demo/.venv/
 demo.ipynb
+__pycache__/

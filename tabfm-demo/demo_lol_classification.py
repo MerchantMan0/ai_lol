@@ -1,14 +1,9 @@
 #!/usr/bin/env python3
 """Zero-shot LoL draft winner prediction with TabFM (PyTorch).
 
-One row per complete 5v5 draft. Given both teams' champion picks, predict
-which team won (TEAM_100 or TEAM_200).
-
-Features (24 numeric columns, team 100 minus team 200):
-  1     mean overall win rate across the 5 picks
-  2–15  mean win rate in each game-duration bucket
-  16–20 mean counter edge vs each of the 5 enemy champions
-  21–24 mean synergy with each of the 4 ally slots
+One row per complete 5v5 draft. TabFM receives the draft directly as tabular
+columns (10 categorical champion picks + game duration), learns in-context from
+training drafts, and predicts TEAM_100 vs TEAM_200.
 
 Model: https://huggingface.co/google/tabfm-1.0.0-pytorch
 """
@@ -25,9 +20,8 @@ from dotenv import load_dotenv
 
 from extract_lol_features import DEFAULT_OUTPUT, fetch_participants
 from lol_features import (
-    FEATURE_NAMES,
-    build_champion_stats,
-    drafts_to_feature_frame,
+    TABFM_FEATURE_COLUMNS,
+    drafts_to_tabfm_frame,
     participants_to_drafts,
     train_test_split_by_match,
 )
@@ -129,6 +123,7 @@ def main() -> int:
     configure_logging()
     log("=== TabFM LoL draft winner demo ===")
     log("Task: given full 5v5 draft → predict TEAM_100 or TEAM_200 won")
+    log("Input: raw tabular columns passed directly to TabFM (no feature engineering)")
     log_torch_device()
     device = resolve_device()
     log(f"Target device for inference: {device}")
@@ -142,21 +137,20 @@ def main() -> int:
     log(f"Complete 5v5 drafts: {len(all_drafts)} matches")
 
     train_drafts, test_drafts = train_test_split_by_match(participants)
-    train_match_ids = set(train_drafts["match_id"])
-    train_participants = participants[participants["match_id"].isin(train_match_ids)]
-    stats = build_champion_stats(train_participants)
 
     max_train = env_int("MAX_TRAIN_ROWS", MAX_TRAIN_ROWS)
     max_test = env_int("MAX_TEST_ROWS", MAX_TEST_ROWS)
     batch_size = env_int("PREDICT_BATCH_SIZE", PREDICT_BATCH_SIZE)
     n_estimators = env_int("TABFM_N_ESTIMATORS", TABFM_N_ESTIMATORS)
 
-    X_train, y_train = drafts_to_feature_frame(train_drafts, stats)
-    X_test, y_test = drafts_to_feature_frame(test_drafts, stats)
+    X_train, y_train = drafts_to_tabfm_frame(train_drafts)
+    X_test, y_test = drafts_to_tabfm_frame(test_drafts)
     X_train, y_train, train_drafts = cap_rows(X_train, y_train, train_drafts, max_train, "training context")
     X_test, y_test, test_drafts = cap_rows(X_test, y_test, test_drafts, max_test, "test set")
 
-    log(f"Training context: {len(X_train)} drafts, {len(FEATURE_NAMES)} features")
+    log(f"Training context: {len(X_train)} drafts, {len(TABFM_FEATURE_COLUMNS)} columns")
+    log(f"  categorical: {TABFM_FEATURE_COLUMNS[:-1]}")
+    log(f"  numeric: {TABFM_FEATURE_COLUMNS[-1]}")
     log(f"Test drafts: {len(X_test)}")
     log_class_counts("Train", y_train)
     log_class_counts("Test", y_test)
@@ -170,7 +164,7 @@ def main() -> int:
     log(f"  n_estimators={n_estimators}, predict_batch_size={batch_size}")
     log("")
 
-    log("Fitting (preprocessing only — foundation weights are NOT fine-tuned)...")
+    log("Fitting (encoders + in-context rows — foundation weights are NOT fine-tuned)...")
     t0 = time.time()
     clf.fit(X_train, y_train)
     log(f"  fit complete in {time.time() - t0:.1f}s")
@@ -191,11 +185,12 @@ def main() -> int:
     log("Sample predictions:")
     for i in range(min(5, len(X_test))):
         row = test_drafts.iloc[i]
+        feat = X_test.iloc[i]
         log(
             f"  [{i}] {row['match_id']}\n"
             f"      team100: {row['team100_champion_names']}\n"
             f"      team200: {row['team200_champion_names']}\n"
-            f"      overall_wr_diff={X_test.iloc[i]['overall_win_rate_diff']:.3f} "
+            f"      duration={feat['duration_seconds']:.0f}s "
             f"→ pred={preds[i]!r} (true={y_test[i]!r})"
         )
 
