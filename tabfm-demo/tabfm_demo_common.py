@@ -108,7 +108,8 @@ def load_tabfm_model(model_type: str, device: str, checkpoint_dir: Path):
     model = TabFM(**config.to_dict())
     state_dict = load_file(str(weights_path), device=map_location)
     model.load_state_dict(state_dict, strict=True)
-    model = model.to(torch.bfloat16)
+    # Keep float32 — PyPI TabFM forward pass upcasts internally; bfloat16 weights
+    # cause "mat1 Float and mat2 BFloat16" errors during predict.
     if map_location != "cpu":
         model = model.to(map_location)
     model.eval()
